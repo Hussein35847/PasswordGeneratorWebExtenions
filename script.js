@@ -525,6 +525,29 @@ async function saveVaultToStorage() {
 
 // Vault Event Listeners
 
+async function processPendingSaves() {
+    return new Promise((resolve) => {
+        if (!chrome || !chrome.storage || !chrome.storage.local) return resolve();
+        chrome.storage.local.get(['pending_saves'], async (res) => {
+            if (res.pending_saves && res.pending_saves.length > 0) {
+                let added = false;
+                res.pending_saves.forEach(item => {
+                    if (!decryptedVault.find(v => v.password === item.password)) {
+                        decryptedVault.push(item);
+                        added = true;
+                    }
+                });
+                if (added) {
+                    await saveVaultToStorage();
+                    showToast(`Auto-saved ${res.pending_saves.length} password(s)!`);
+                }
+                chrome.storage.local.remove('pending_saves');
+            }
+            resolve();
+        });
+    });
+}
+
 unlockVaultBtn.addEventListener('click', async () => {
     const pwd = masterPasswordInput.value;
     if (!pwd) return;
@@ -541,7 +564,12 @@ unlockVaultBtn.addEventListener('click', async () => {
         closeModals();
         showToast("Vault initialized successfully!");
 
-        if (pendingSaveMode) openModal(saveConfirmModal);
+        await processPendingSaves();
+
+        if (pendingSaveMode) {
+            autoSaveCurrentPassword();
+            pendingSaveMode = false;
+        }
         else openVault();
 
         unlockVaultBtn.textContent = 'Unlock';
@@ -561,7 +589,12 @@ unlockVaultBtn.addEventListener('click', async () => {
         closeModals();
         showToast("Vault Unlocked");
 
-        if (pendingSaveMode) openModal(saveConfirmModal);
+        await processPendingSaves();
+
+        if (pendingSaveMode) {
+            autoSaveCurrentPassword();
+            pendingSaveMode = false;
+        }
         else openVault();
 
     } catch (e) {
@@ -569,6 +602,29 @@ unlockVaultBtn.addEventListener('click', async () => {
     }
     unlockVaultBtn.textContent = 'Unlock';
 });
+
+function autoSaveCurrentPassword() {
+    if (typeof chrome !== 'undefined' && chrome.tabs) {
+        chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
+            if (tabs && tabs[0] && tabs[0].url) {
+                try {
+                    let url = new URL(tabs[0].url);
+                    saveNameInput.value = url.hostname || "Local File";
+                    confirmSaveBtn.click();
+                } catch(e) {
+                    saveNameInput.value = '';
+                    openModal(saveConfirmModal);
+                }
+            } else {
+                saveNameInput.value = '';
+                openModal(saveConfirmModal);
+            }
+        });
+    } else {
+        saveNameInput.value = '';
+        openModal(saveConfirmModal);
+    }
+}
 
 saveBtn.addEventListener('click', () => {
     if (!passwordText.value || passwordText.value === "Click 'Generate'") return;
@@ -578,8 +634,7 @@ saveBtn.addEventListener('click', () => {
         masterPasswordInput.value = '';
         openModal(loginModal);
     } else {
-        saveNameInput.value = '';
-        openModal(saveConfirmModal);
+        autoSaveCurrentPassword();
     }
 });
 
@@ -618,21 +673,49 @@ openVaultBtn.addEventListener('click', () => {
     }
 });
 
+let vaultSearchTerm = '';
+
 function openVault() {
+    vaultSearchTerm = '';
+    const searchInput = document.getElementById('vaultSearchInput');
+    if (searchInput) searchInput.value = '';
+    renderVaultItems();
+    openModal(vaultModal);
+}
+
+const vaultSearchInput = document.getElementById('vaultSearchInput');
+if (vaultSearchInput) {
+    vaultSearchInput.addEventListener('input', (e) => {
+        vaultSearchTerm = e.target.value;
+        renderVaultItems();
+    });
+}
+
+function renderVaultItems() {
     vaultList.innerHTML = '';
 
-    if (decryptedVault.length === 0) {
-        vaultList.innerHTML = '<p style="text-align:center; color:var(--text-secondary); margin-top:2rem;">Your vault is empty.</p>';
-    } else {
-        const sorted = [...decryptedVault].sort((a, b) => b.id - a.id);
+    const filtered = decryptedVault.filter(item => item.name.toLowerCase().includes(vaultSearchTerm.toLowerCase()));
 
-        sorted.forEach(item => {
+    if (filtered.length === 0) {
+        vaultList.innerHTML = `
+            <div style="text-align:center; padding: 3rem 0; color:var(--text-secondary);">
+                <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom: 1rem; opacity: 0.5;"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                <p style="font-size: 1.1rem; font-weight: 500;">${decryptedVault.length === 0 ? "Your vault is empty." : "No passwords found."}</p>
+            </div>
+        `;
+    } else {
+        const sorted = [...filtered].sort((a, b) => b.id - a.id);
+
+        sorted.forEach((item, index) => {
             const div = document.createElement('div');
             div.className = 'vault-item';
+            div.style.animation = `fadeInUp 0.3s ease forwards ${index * 0.05}s`;
+            div.style.opacity = '0';
+            
             div.innerHTML = `
                 <div class="vault-item-info">
                     <strong>${item.name}</strong>
-                    <span>••••••••</span>
+                    <span>••••••••••••</span>
                 </div>
                 <div class="vault-item-actions">
                     <button class="vault-act-btn" onclick="copyVaultItem('${item.password}')" title="Copy">
@@ -646,7 +729,6 @@ function openVault() {
             vaultList.appendChild(div);
         });
     }
-    openModal(vaultModal);
 }
 
 window.copyVaultItem = (pwd) => {
